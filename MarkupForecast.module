@@ -1,0 +1,562 @@
+<?php
+/**
+ * MarkupForecast
+ *
+ * Copyright:
+ *
+ * IDT Media - Goran Ilic & Tapio Löytty
+ * Web: www.i-do-this.com
+ * Email: hi@i-do-this.com
+ *
+ *
+ * Authors:
+ *
+ * Goran Ilic, <ja@ich-mach-das.at>
+ * Web: www.ich-mach-das.at
+ *
+ * Tapio Löytty, <tapsa@orange-media.fi>
+ * Web: www.orange-media.fi
+ *
+ *
+ * ProcessWire 2.x
+ * Copyright (C) 2014 by Ryan Cramer
+ * Licensed under GNU/GPL v2, see LICENSE.TXT
+ *
+ * http://processwire.com
+ *
+ */
+class MarkupForecast extends WireData implements Module, ConfigurableModule {
+
+    #---------------------
+    # Constants
+    #---------------------
+
+    const CACHE_DIR = self::class;
+    const API       = 'https://api.darksky.net/forecast/';
+    const data      = 'MarkupForecast.data';
+
+    #---------------------
+    # Attributes
+    #---------------------
+
+    static private $key;
+    protected static $cache_lifetime;
+    protected $options = array(
+        'lang'  => 'en',
+        'units' => 'auto'
+    );
+
+    #---------------------
+    # Module configuration
+    #---------------------
+
+    /**
+     * ------------------------------------------------------------------------
+     * getModuleInfo is a module required by all modules to tell
+     * ProcessWire about them
+     * ------------------------------------------------------------------------
+     * @return array
+     */
+    public static function getModuleInfo() {
+
+        return array(
+            'title'    => __('Forecast'),
+            'author'   => 'IDT Media',
+            'version'  => '0.1',
+            'summary'  => __('A Weather Forecast from forecast.io.'),
+            'autoload' => true,
+            'requires' => array('ProcessWire>=2.7.0'),
+            'icon' => 'sun-o'
+        );
+    }
+
+    /**
+     * ------------------------------------------------------------------------
+     * Default configuration
+     * ------------------------------------------------------------------------
+     * @return  array
+     */
+    static public function getDefaultConfig() {
+
+        return array(
+            'key'   => '',
+            'address' => '',
+            'lat'   => '',
+            'lon'   => '',
+            'lang'  => 'en',
+            'units' => 'auto',
+            'cache_lifetime' => 3600
+        );
+    }
+
+    /**
+     * ------------------------------------------------------------------------
+     * Configure the input fields for the backend.
+     * ------------------------------------------------------------------------
+     * @param  array  $data Module data from the database.
+     */
+    public static function getModuleConfigInputfields(array $data) {
+
+        $wrapper = new InputfieldWrapper();
+        $modules = wire('modules');
+        $data    = array_merge(self::getDefaultConfig(), $data);
+
+        // if we have address, goelocate coordinates and fill in default fields
+        if (!empty($data['address']) && (empty($data['lat']) && empty($data['lon']))) {
+
+            $coordinates = self::_geoLocate($data['address']);
+
+            $data['lat'] = $coordinates[0];
+            $data['lon'] = $coordinates[1];
+
+        }
+
+        // API Key
+        $f = $modules->get('InputfieldText');
+        $f->name        = 'key';
+        $f->label       = __('API Key');
+        $f->description = __('Your Dark Sky secret key.');
+        $f->notes       = __('You need an API key, which is available after signing up for [Dark Sky](https://darksky.net/dev/register).');
+        $f->required    = 1;
+        $f->collapsed   = 5;
+        $f->value       = $data['key'];
+
+        $wrapper->append($f);
+
+        // Default Address
+        $f = $modules->get('InputfieldText');
+        $f->name        = 'address';
+        $f->label       = __('Address');
+        $f->description = __('The address of a location (in exmaple: Address, ZIP code, Country).');
+        $f->value       = $data['address'];
+
+        $wrapper->append($f);
+
+        // Default Latitude
+        $f = $modules->get('InputfieldText');
+        $f->name        = 'lat';
+        $f->label       = __('Latitude');
+        $f->description = __('The latitude of a location (in decimal degrees). Positive is north, negative is south.');
+        $f->notes       = __('When using Address, this option will be filled in with geolocated result using the Google Maps API.');
+        $f->columnWidth = 50;
+        $f->value       = $data['lat'];
+
+        $wrapper->append($f);
+
+        // Default Longitude
+        $f = $modules->get('InputfieldText');
+        $f->name        = 'lon';
+        $f->label       = __('Longitude');
+        $f->description = __('The longitude of a location (in decimal degrees). Positive is east, negative is west.');
+        $f->notes       = __('When using Address, this option will be filled in with geolocated result using the Google Maps API.');
+        $f->columnWidth = 50;
+        $f->value       = $data['lon'];
+
+        $wrapper->append($f);
+
+        // Default Language
+        $f = $modules->get('InputfieldSelect');
+        $f->addOptions(array(
+            'ar' => __('Arabic'),
+            'az' => __('Azerbaijani'),
+            'be' => __('Belarusian'),
+            'bs' => __('Bosnian'),
+            'cs' => __('Czech'),
+            'de' => __('German'),
+            'el' => __('Greek'),
+            'en' => __('English'),
+            'es' => __('Spanish'),
+            'fr' => __('French'),
+            'hr' => __('Croatian'),
+            'hu' => __('Hungarian'),
+            'id' => __('Indonesian'),
+            'it' => __('Italian'),
+            'is' => __('Icelandic'),
+            'kw' => __('Cornish'),
+            'nb' => __('Norwegian Bokmål'),
+            'nl' => __('Dutch'),
+            'pl' => __('Polish'),
+            'pt' => __('Portuguese'),
+            'ru' => __('Russian'),
+            'sk' => __('Slovak'),
+            'sr' => __('Serbian'),
+            'sv' => __('Swedish'),
+            'tet' => __('Tetum'),
+            'tr' => __('Turkish'),
+            'uk' => __('Ukrainian'),
+            'x-pig-latin' => __('Igpay Atinlay'),
+            'zh' => __('simplified Chinese'),
+            'zh-tw' => __('traditional Chinese')
+        ));
+        $f->name        = 'lang';
+        $f->label       = __('Language');
+        $f->description = __('Return summary properties in the desired language.');
+        $f->columnWidth = 50;
+        $f->value       = $data['lang'];
+
+        $wrapper->append($f);
+
+        // Default Units
+        $f = $modules->get('InputfieldSelect');
+        $f->addOptions(array(
+            'auto' => __('Auto'),
+            'ca' => __('CA'),
+            'uk2' => __('UK'),
+            'us' => __('US'),
+            'si' => __('SI'),
+        ));
+        $f->name        = 'units';
+        $f->label       = __('Units');
+        $f->description = __('Return weather conditions in the requested units.');
+        $f->appendMarkup  = file_get_contents(wire('config')->paths->MarkupForecast . 'docs' . DIRECTORY_SEPARATOR . 'units-description.html');
+        $f->columnWidth = 50;
+        $f->value       = $data['units'];
+
+        $wrapper->append($f);
+
+        // Default Longitude
+        $f = $modules->get('InputfieldText');
+        $f->name        = 'cache_lifetime';
+        $f->label       = __('Cache lifetime');
+        $f->description = __('Enter a value in seconds for how long a cache of weather request should be preserved.');
+        $f->value       = $data['cache_lifetime'];
+
+        $wrapper->append($f);
+
+        $f = $modules->get('InputfieldFieldset');
+        $f->label = __('Delete Forecast cache');
+        $f->description = __('Delete all cache files from cache folder.');
+
+        $btn  = $modules->get('InputfieldButton');
+        $btn->id    = 'cache-delete';
+        $btn->type  = 'submit';
+        $btn->value = __('Delete Cache');
+        $btn->name  = 'cache-delete';
+
+        $f->add($btn);
+        $wrapper->append($f);
+
+        return $wrapper;
+    }
+
+    /**
+     * ------------------------------------------------------------------------
+     * Clear cache files and remove cache folder when uninstalling module
+     * ------------------------------------------------------------------------
+     */
+    public function ___uninstall() {
+
+        $this->cache->deleteFor(self::class);
+    }
+
+    /**
+     * ------------------------------------------------------------------------
+     * Initialize MarkupForecast
+     * ------------------------------------------------------------------------
+     */
+    public function init() {
+
+        if ($this->input->post('cache-delete')) {
+
+            if ($response = $this->cache->deleteFor(self::class)) {
+
+                return $this->message(__('MarkupForecast Cache successfully deleted.'));
+            }
+        }
+    }
+
+    #---------------------
+    # Methods
+    #---------------------
+
+    /**
+     * ------------------------------------------------------------------------
+     * Build a request url to forecast.io
+     * ------------------------------------------------------------------------
+     * @param float $lat Latitude of loaction
+     * @param float $lon longitude of loaction
+     * @param int $time UNIX time period of forecast request
+     * @param array $options Optional options for forecast request url in exmaple units (possible values are,
+     *                       auto, ca, uk2, us, si) or lang, see https://darksky.net/dev/docs/forecast Documentation
+     * @return  string
+     */
+    private function _request_url($lat, $lon ,$time = null, $options = array()) {
+        $request_url = self::API
+            . $this->key
+            . '/'
+            . $lat
+            . ','
+            . $lon
+            . ((is_null($time)) ? '' : ','. $time);
+
+            $request_url .= '?'. http_build_query($options);
+
+        return $request_url;
+    }
+    /**
+     * ------------------------------------------------------------------------
+     * Make a request to forecast.io and returns a JSON string.
+     * ------------------------------------------------------------------------
+     * @param float $lat Latitude of loaction
+     * @param float $lon longitude of loaction
+     * @param int $time UNIX time period of forecast request
+     * @param array $options Optional options for forecast request url in exmaple units (possible values are,
+     *                       auto, ca, uk2, us, si) or lang, see https://darksky.net/dev/docs/forecast Documentation
+     * @return string
+     */
+    private function _request($lat, $lon ,$time = null, $options = array()) {
+
+        // get data by given request url
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $this->_request_url($lat, $lon ,$time, $options));
+        curl_setopt($ch, CURLOPT_HEADER, 0);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+
+        $response = curl_exec($ch);
+        $status   = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+
+        if ($response === false) {
+            throw new WireException(curl_error($ch));
+        }
+        return $response;
+    }
+
+    /**
+     * ------------------------------------------------------------------------
+     * Fetch a JSON data response from forecast.io and handle data cache.
+     * ------------------------------------------------------------------------
+     * @param string $location A full address or comma separated latitude and longitude values
+     * @param int $time Optional UNIX time period for requested forecast
+     * @param array $options Optional options for forecast request url in exmaple units (possible values are,
+     *                       auto, ca, uk2, us, si) or lang, see https://darksky.net/dev/docs/forecast Documentation
+     * @param string $key  Optional with this parameter results will be returned by a given array key
+     * @param bool $type Optional when true, results will be returned in JSON string
+     * @return array|string
+     */
+    public function fetch($location = null, $time = null, $options = array(), $key = null, $type = null) {
+
+        if (!empty($location)) {
+
+            $data = explode(',', $location);
+
+            if (!array_diff($data, array_map('floatval', $data))) {
+                // location value is numerical, we assume it's latitude and longitude
+                $lat = $data[0];
+                $lon = $data[1];
+
+            } else {
+                // location value is a string, we assume it's address
+                $data = self::_geoLocate($location);
+
+                $lat = $data[0];
+                $lon = $data[1];
+            }
+
+        } else if (empty($this->lat) && empty($this->lon)) {
+
+            $data = self::_geoLocate($this->address);
+
+            $lat = $data[0];
+            $lon = $data[1];
+
+        } else {
+
+            $lat = $this->lat;
+            $lon = $this->lon;
+        }
+
+        $options['lang']  = !empty($options['lang']) ? $options['lang'] : $this->lang;
+        $options['units'] = !empty($options['units']) ? $options['units'] : $this->units;
+
+        $rawData = $this->cache->get(self::data . '.' . md5($this->_request_url($lat, $lon, $time, $options)), $this->cache_lifetime, function() use($lat, $lon, $time, $options) {
+
+            if($response = $this->_request($lat, $lon, $time, $options))
+                return json_decode($response, true);
+
+        });
+
+        $data = !empty($key) ? $rawData[$key] : $rawData;
+
+        if ($type) {
+            $data = json_encode($data);
+        }
+
+        return $data;
+    }
+
+    /**
+     * ___complete Returns complete data from forecast.io request
+     * @param  bool $type Optional when true, results will be returned in JSON string
+     * @return array|string
+     */
+    public function ___complete($location, $type = null) {
+        return $this->fetch($location, $time, $this->$options);
+    }
+
+    /**
+     * ___currently Returns only 'currently' flagged data from forecast.io request
+     * @param  bool $type Optional when true, results will be returned in JSON string
+     * @return array|string
+     */
+    public function ___currently($location, $type = null) {
+        return $this->fetch($location, $this->time, $this->$options, 'currently', $type);
+    }
+
+    /**
+     * ___minutely Returns only 'minutely' flagged data from forecast.io request
+     * @param  bool $type Optional when true, results will be returned in JSON string
+     * @return array|string
+     */
+    public function ___minutely($location, $type = null) {
+        return $this->fetch($location, $this->time, $this->$options, 'minutely', $type);
+    }
+
+    /**
+     * ___hourly Returns only 'hourly' flagged data from forecast.io request
+     * @param  bool $type Optional when true, results will be returned in JSON string
+     * @return array|string
+     */
+    public function ___hourly($location, $type = null) {
+        return $this->fetch($location, $this->time, $this->$options, 'hourly', $type);
+    }
+
+    /**
+     * ___daily Returns only 'daily' flagged data from forecast.io request
+     * @param  bool $type Optional when true, results will be returned in JSON string
+     * @return array|string
+     */
+    public function ___daily($location, $type = null) {
+        return $this->fetch($location, $this->time, $this->$options, 'daily', $type);
+    }
+
+    /**
+     * ___alerts Returns only 'alerts' flagged data from forecast.io request
+     * @param  bool $type Optional when true, results will be returned in JSON string
+     * @return array|string
+     */
+    public function ___alerts($location, $type = null) {
+        return $this->fetch($location, $this->time, $this->$options, 'alerts', $type);
+    }
+
+
+    #---------------------
+    # Helper
+    #---------------------
+
+    /**
+     * ------------------------------------------------------------------------
+     * Get GPS coordinates from location string using the Google Maps API
+     * ------------------------------------------------------------------------
+     * @param string $addr Address, ZIP code, etc.
+     * @return array latitude and longitude
+     */
+    private static function _geoLocate($addr) {
+
+        // cache coordinates for a day it's not like it would change
+        $coordinates = wire('cache')->get(self::data . '.' . md5($addr), 86400, function() use($addr) {
+
+            $geoapi = 'https://maps.googleapis.com/maps/api/geocode/json';
+            $params = 'address=' . str_replace(' ', '+', $addr) . '&amp;sensor=false';
+            $data   = file_get_contents("{$geoapi}?$params");
+            $json   = json_decode($data, true);
+
+            if ($response = $json)
+                return $response;
+        });
+
+        return array(
+            $coordinates['results'][0]['geometry']['location']['lat'],
+            $coordinates['results'][0]['geometry']['location']['lng']
+        );
+    }
+
+    /**
+     * ------------------------------------------------------------------------
+     * Parse given string in format like
+     * latitude=46.6781471,longitude=13.9709534,time=2013-05-06T12:00:00-0400,options=[units=si,lang=de,exclude=[hourly,minutely]]
+     * and return a multidimensional array
+     * ------------------------------------------------------------------------
+     * @param string
+     * @return array
+     */
+    /*
+    private function _parseOptionsString($string) {
+
+        $length        = strlen($string);
+        $key           = null;
+        $contextStack  = array();
+        $options       = array();
+
+        $specialTokens = array('[', ']', '=', ',');
+        $buffer     = '';
+
+        $currentOptions = $options;
+
+        for ($i = 0; $i < $length; $i++) {
+            $currentChar = $string[$i];
+
+            if (!in_array($currentChar, $specialTokens)) {
+                $buffer .= $currentChar;
+                continue;
+            }
+
+            if ($currentChar == '[') {
+                array_push($contextStack, [$key, $currentOptions]);
+                $currentOptions[$key] = array();
+                $currentOptions       = $currentOptions[$key];
+                $key                  = '';
+                $buffer               = '';
+                continue;
+            }
+
+            if ($currentChar == ']') {
+                if (!empty($buffer)) {
+                    if (!empty($key)) {
+                        $currentOptions[$key] = $buffer;
+                    } else {
+                        $currentOptions[] = $buffer;
+                    }
+                }
+
+
+                $contextInfo     = array_pop($contextStack);
+                $previousContext = $contextInfo[1];
+                $thisKey         = $contextInfo[0];
+
+                $previousContext[$thisKey] = $currentOptions;
+
+                $currentOptions        = $previousContext;
+                $buffer                = '';
+                $key                   = '';
+                continue;
+            }
+
+            if ($currentChar == '=') {
+                $key    = $buffer;
+                $buffer = '';
+                continue;
+            }
+
+            if ($currentChar == ',') {
+
+                if (!empty($key)) {
+                    $currentOptions[$key] = $buffer;
+                } else if (!empty($buffer)) {
+                    $currentOptions[] = $buffer;
+                }
+                $buffer        = '';
+                $key           = '';
+                continue;
+            }
+
+        }
+
+        if (!empty($key)) {
+            $currentOptions[$key] = $buffer;
+        }
+
+        return $currentOptions;
+    }
+    */
+}
